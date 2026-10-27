@@ -1,0 +1,402 @@
+import { useState } from 'react';
+import { Sidebar, NavTab } from './components/Sidebar';
+import { Header } from './components/Header';
+import { OverviewScreen } from './components/OverviewScreen';
+import { AllocationScreen } from './components/AllocationScreen';
+import { DisbursementScreen } from './components/DisbursementScreen';
+import { ReportsScreen } from './components/ReportsScreen';
+import { SettingsScreen } from './components/SettingsScreen';
+import { ProjectDetailModal } from './components/ProjectDetailModal';
+import { BudgetReductionModal } from './components/BudgetReductionModal';
+import { CloseProjectModal } from './components/CloseProjectModal';
+import { PlanEditModal } from './components/PlanEditModal';
+import { DocumentExportPreviewModal, ExportDocumentType } from './components/DocumentExportPreviewModal';
+import { ToastContainer } from './components/Toast';
+import {
+  INITIAL_CATEGORIES,
+  INITIAL_DEPARTMENTS,
+  INITIAL_PROJECTS,
+  INITIAL_COMMITMENTS,
+  CommitmentItem,
+  ProjectItem,
+  DepartmentSummary,
+  QuarterType,
+} from './data/mockData';
+
+interface ToastItem {
+  id: string;
+  type: 'success' | 'info' | 'warning' | 'error';
+  title: string;
+  description: string;
+}
+
+export default function App() {
+  const [currentTab, setCurrentTab] = useState<NavTab>('overview');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [syncTime, setSyncTime] = useState('5 นาทีที่แล้ว');
+
+  // Sidebar collapsible state for full-screen reading
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+
+  // Quarter selection state (All, Q1, Q2, Q3, Q4)
+  const [selectedQuarter, setSelectedQuarter] = useState<QuarterType>('q3');
+
+  // Interactive Live Data State
+  const [projects, setProjects] = useState<ProjectItem[]>(INITIAL_PROJECTS);
+  const [departments, setDepartments] = useState<DepartmentSummary[]>(INITIAL_DEPARTMENTS);
+  const [commitments, setCommitments] = useState<CommitmentItem[]>(INITIAL_COMMITMENTS);
+  const [centralReserve, setCentralReserve] = useState<number>(3450000);
+  const [pendingApproved, setPendingApproved] = useState<boolean>(false);
+
+  // Modals state
+  const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
+  const [selectedProject, setSelectedProject] = useState<ProjectItem | null>(null);
+
+  const [isReduceModalOpen, setIsReduceModalOpen] = useState(false);
+  const [projectToReduce, setProjectToReduce] = useState<ProjectItem | null>(null);
+
+  const [isCloseModalOpen, setIsCloseModalOpen] = useState(false);
+  const [projectToClose, setProjectToClose] = useState<ProjectItem | null>(null);
+
+  const [isPlanEditOpen, setIsPlanEditOpen] = useState(false);
+
+  // Universal Document Export Preview Modal state
+  const [isDocExportPreviewOpen, setIsDocExportPreviewOpen] = useState(false);
+  const [exportDocType, setExportDocType] = useState<ExportDocumentType>('overview');
+  const [singleProjectForExport, setSingleProjectForExport] = useState<ProjectItem | null>(null);
+  const [customProjectsForExport, setCustomProjectsForExport] = useState<ProjectItem[] | null>(null);
+
+  // Toast Notifications state
+  const [toasts, setToasts] = useState<ToastItem[]>([]);
+
+  const addToast = (type: ToastItem['type'], title: string, description: string) => {
+    const id = Date.now().toString();
+    setToasts((prev) => [...prev, { id, type, title, description }]);
+    setTimeout(() => {
+      setToasts((prev) => prev.filter((t) => t.id !== id));
+    }, 4500);
+  };
+
+  const removeToast = (id: string) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  };
+
+  // Sync refresh
+  const handleRefreshSync = () => {
+    setSyncTime('เพิ่งอัปเดตเมื่อสักครู่');
+    addToast('info', 'ซิงก์ข้อมูล CMU ERP สำเร็จ', 'ระบบได้ทำการดึงยอดเงินและสถานะล่าสุดจากศูนย์ข้อมูล');
+  };
+
+  // Trigger preview for specific document types
+  const handleTriggerExportPreview = (docType: ExportDocumentType, project?: ProjectItem, customProjects?: ProjectItem[]) => {
+    setExportDocType(docType);
+    setSingleProjectForExport(project || null);
+    setCustomProjectsForExport(customProjects || null);
+    setIsDocExportPreviewOpen(true);
+  };
+
+  // Detail Modal Open
+  const handleOpenDetailModal = (prj?: ProjectItem) => {
+    setSelectedProject(prj || projects[0]);
+    setIsDetailModalOpen(true);
+  };
+
+  // Reduction Modal Open
+  const handleOpenReduceModal = (prj: ProjectItem) => {
+    setProjectToReduce(prj);
+    setIsReduceModalOpen(true);
+  };
+
+  // Handle Budget Reduction Confirm
+  const handleConfirmReduce = (projectId: string, reduceAmount: number, reason: string) => {
+    setProjects((prev) =>
+      prev.map((p) => {
+        if (p.id === projectId) {
+          const newAllocated = p.allocated - reduceAmount;
+          const newPct = Number(((p.spent / newAllocated) * 100).toFixed(1));
+          return {
+            ...p,
+            allocated: newAllocated,
+            completionPct: Math.min(100, newPct),
+          };
+        }
+        return p;
+      })
+    );
+
+    setCentralReserve((prev) => prev + reduceAmount);
+
+    addToast(
+      'warning',
+      'ปรับลดงบประมาณสำเร็จ',
+      `ปรับลดยอดเงิน ฿${reduceAmount.toLocaleString()} คืนกองทุนสำรองส่วนกลาง (${reason})`
+    );
+  };
+
+  // Close Project Modal Open
+  const handleOpenCloseModal = (prj: ProjectItem) => {
+    setProjectToClose(prj);
+    setIsCloseModalOpen(true);
+  };
+
+  // Handle Close Project Confirm
+  const handleConfirmCloseProject = () => {
+    if (!projectToClose) return;
+    const refund = projectToClose.allocated - projectToClose.spent;
+
+    setProjects((prev) =>
+      prev.map((p) => {
+        if (p.id === projectToClose.id) {
+          return {
+            ...p,
+            status: 'approved',
+            allocated: p.spent,
+            completionPct: 100,
+          };
+        }
+        return p;
+      })
+    );
+
+    if (refund > 0) {
+      setCentralReserve((prev) => prev + refund);
+    }
+
+    setIsCloseModalOpen(false);
+    addToast(
+      'success',
+      'ปิดโครงการสมบูรณ์',
+      `ปิดโครงการ "${projectToClose.title}" และโอนคืนเงินเหลือ ฿${refund.toLocaleString()} สู่คลังกลาง`
+    );
+  };
+
+  // Dynamic Pending PO count
+  const pendingCommitmentsCount = commitments.filter((c) => !c.status.includes('อนุมัติ')).length;
+
+  // Handle individual PO approval
+  const handleApprovePO = (poNo: string) => {
+    setCommitments((prev) =>
+      prev.map((c) =>
+        c.no === poNo
+          ? { ...c, status: 'อนุมัติเบิกจ่ายเรียบร้อย (ERP Cleared)' }
+          : c
+      )
+    );
+    addToast('success', 'อนุมัติเบิกจ่ายสำเร็จ', `ตรวจรับและอนุมัติใบสั่งซื้อ ${poNo} เรียบร้อย`);
+  };
+
+  // Handle bulk PO approval
+  const handleBulkApprovePO = () => {
+    setCommitments((prev) =>
+      prev.map((c) => ({ ...c, status: 'อนุมัติเบิกจ่ายเรียบร้อย (ERP Cleared)' }))
+    );
+    setPendingApproved(true);
+    addToast('success', 'อนุมัติเบิกจ่ายทั้งหมดสำเร็จ', 'อนุมัติรายการค้างทั้งหมดผ่านระบบ ERP เรียบร้อยแล้ว');
+  };
+
+  // Toggle approve all pending items (Syncs across Overview and Disbursement)
+  const handleToggleApprovePending = () => {
+    const isCurrentlyAllApproved = commitments.every((c) => c.status.includes('อนุมัติ'));
+    if (!isCurrentlyAllApproved) {
+      setCommitments((prev) =>
+        prev.map((c) => ({ ...c, status: 'อนุมัติเบิกจ่ายเรียบร้อย (ERP Cleared)' }))
+      );
+      setPendingApproved(true);
+      addToast('success', 'อนุมัติรายการค้างสำเร็จ', 'ลงนามรับรองใบเบิกจ่ายและเอกสารผูกพันงบทั้งหมดใน Q3 เรียบร้อย');
+    } else {
+      setCommitments(INITIAL_COMMITMENTS);
+      setPendingApproved(false);
+      addToast('info', 'ยกเลิกการอนุมัติ', 'ย้อนสถานะรายการกลับสู่รอการตรวจสอบ');
+    }
+  };
+
+  // Save Plan Modification
+  const handleSavePlanEdit = (updatedDepts: DepartmentSummary[]) => {
+    setDepartments(updatedDepts);
+    const newTotalDept = updatedDepts.reduce((s, d) => s + d.amount, 0);
+    setCentralReserve(12000000 - newTotalDept);
+    addToast('success', 'บันทึกการปรับแก้แผนงบประมาณ', 'บันทึกกรอบจัดสรรใหม่ให้ 6 ส่วนงานเรียบร้อย');
+  };
+
+  // Total sums
+  const totalAllocated = 12000000;
+  const totalSpent = projects.reduce((acc, p) => acc + p.spent, 0);
+
+  // Projects filtered by current quarter
+  const exportProjects = selectedQuarter === 'all'
+    ? projects
+    : projects.filter((p) => p.quarter === selectedQuarter);
+
+  const quarterLabels: Record<QuarterType, string> = {
+    all: 'ทุกไตรมาส (ปีงบประมาณ 2569)',
+    q1: 'ไตรมาส 1 (ต.ค. - ธ.ค. 2568)',
+    q2: 'ไตรมาส 2 (ม.ค. - มี.ค. 2569)',
+    q3: 'ไตรมาส 3 (เม.ย. - มิ.ย. 2569)',
+    q4: 'ไตรมาส 4 (ก.ค. - ก.ย. 2569)',
+  };
+
+  return (
+    <div className="min-h-screen flex bg-[#f7f9ff] text-[#181c20] w-full">
+      {/* Collapsible Sidebar Navigation */}
+      <Sidebar
+        currentTab={currentTab}
+        onSelectTab={(tab) => setCurrentTab(tab)}
+        pendingCount={pendingCommitmentsCount}
+        isCollapsed={isSidebarCollapsed}
+        onToggleCollapse={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
+      />
+
+      {/* Main Content Area - shifts dynamically with sidebar width */}
+      <div
+        className={`flex-1 min-w-0 w-full transition-all duration-300 ease-in-out ${
+          isSidebarCollapsed ? 'pl-20' : 'pl-64'
+        }`}
+      >
+        <Header
+          searchQuery={searchQuery}
+          onSearchChange={setSearchQuery}
+          syncTime={syncTime}
+          onRefreshSync={handleRefreshSync}
+          isCollapsed={isSidebarCollapsed}
+          onToggleCollapse={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
+          onNavigate={(tab) => setCurrentTab(tab as NavTab)}
+          projects={projects}
+          onSelectProject={handleOpenDetailModal}
+        />
+
+        <main className="w-full max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 pt-28 pb-12 min-w-0">
+          {currentTab === 'overview' && (
+            <OverviewScreen
+              categories={INITIAL_CATEGORIES}
+              projects={projects}
+              searchQuery={searchQuery}
+              centralReserve={centralReserve}
+              totalAllocated={totalAllocated}
+              totalSpent={totalSpent}
+              selectedQuarter={selectedQuarter}
+              onChangeQuarter={(q) => {
+                setSelectedQuarter(q);
+                addToast('info', `สลับมุมมอง ${q.toUpperCase()}`, `แสดงผลโครงการและตัวชี้วัดประจำ ${quarterLabels[q]}`);
+              }}
+              onOpenProjectModal={handleOpenDetailModal}
+              onOpenReduceModal={handleOpenReduceModal}
+              onOpenCloseModal={handleOpenCloseModal}
+              pendingApproved={pendingCommitmentsCount === 0}
+              pendingCount={pendingCommitmentsCount}
+              onToggleApprovePending={handleToggleApprovePending}
+              onExportReport={(customProjects) => handleTriggerExportPreview('overview', undefined, customProjects)}
+            />
+          )}
+
+          {currentTab === 'allocation' && (
+            <AllocationScreen
+              departments={departments}
+              searchQuery={searchQuery}
+              onCommitSuccess={() => {
+                addToast('success', 'ลงนามอนุมัติการจัดสรรงบประมาณสำเร็จ', 'บันทึกผ่านระบบ CMU SSO เรียบร้อย');
+              }}
+              onOpenEditModal={() => setIsPlanEditOpen(true)}
+              onExportReport={() => handleTriggerExportPreview('allocation')}
+              onOpenProjectModal={handleOpenDetailModal}
+            />
+          )}
+
+          {currentTab === 'disbursement' && (
+            <DisbursementScreen
+              searchQuery={searchQuery}
+              commitments={commitments}
+              pendingApproved={pendingCommitmentsCount === 0}
+              onNotifyAlert={() => {
+                addToast('warning', 'ส่งการแจ้งเตือนเร่งรัดแล้ว', 'ส่งบันทึกติดตามผ่านระบบไปยังโครงการที่เบิกจ่ายล่าช้า');
+              }}
+              onApprovePO={handleApprovePO}
+              onBulkApprovePO={handleBulkApprovePO}
+              onExportReport={() => handleTriggerExportPreview('disbursement')}
+              onOpenProjectModal={handleOpenDetailModal}
+            />
+          )}
+
+          {currentTab === 'reports' && (
+            <ReportsScreen
+              projects={projects}
+              onExportReport={() => handleTriggerExportPreview('reports')}
+              onExportProjectReport={(prj) => handleTriggerExportPreview('project_detail', prj)}
+              onSignedSuccess={() => {
+                addToast('success', 'รับรองรายงานสถิติแล้ว', 'ลงนามผ่านระบบ EdPEx เรียบร้อย');
+              }}
+            />
+          )}
+
+          {currentTab === 'settings' && (
+            <SettingsScreen
+              onCommitSuccess={() => {
+                addToast('success', 'บันทึกการตั้งค่าระบบแล้ว', 'อัปเดตเกณฑ์ควบคุมและธรรมาภิบาลการเงินเรียบร้อย');
+              }}
+              onTestAPISuccess={() => {
+                addToast('info', 'ทดสอบ API Gateway สำเร็จ', 'การเชื่อมต่อ CMU-ERP, GFMIS, และ SSO เสถียรดี (Latency < 1s)');
+              }}
+              onExportReport={() => handleTriggerExportPreview('settings')}
+            />
+          )}
+        </main>
+      </div>
+
+      {/* Modal for Project Detail Preview */}
+      <ProjectDetailModal
+        isOpen={isDetailModalOpen}
+        project={selectedProject}
+        onClose={() => setIsDetailModalOpen(false)}
+        onApproveSuccess={() => {
+          addToast('success', 'อนุมัติรับรองรายงานโครงการ', 'ลงนามรับรองความก้าวหน้างวดที่ 2 เรียบร้อย');
+        }}
+        onExportPreview={(prj) => handleTriggerExportPreview('project_detail', prj)}
+        onOpenReduceModal={(prj) => {
+          setIsDetailModalOpen(false);
+          handleOpenReduceModal(prj);
+        }}
+      />
+
+      {/* Modal for Budget Reduction */}
+      <BudgetReductionModal
+        isOpen={isReduceModalOpen}
+        project={projectToReduce}
+        onClose={() => setIsReduceModalOpen(false)}
+        onConfirm={handleConfirmReduce}
+      />
+
+      {/* Modal for Close Project */}
+      <CloseProjectModal
+        isOpen={isCloseModalOpen}
+        projectTitle={projectToClose ? projectToClose.title : ''}
+        refundAmount={projectToClose ? projectToClose.allocated - projectToClose.spent : 0}
+        onClose={() => setIsCloseModalOpen(false)}
+        onConfirm={handleConfirmCloseProject}
+      />
+
+      {/* Modal for Edit Allocation Plan */}
+      <PlanEditModal
+        isOpen={isPlanEditOpen}
+        departments={departments}
+        onClose={() => setIsPlanEditOpen(false)}
+        onSave={handleSavePlanEdit}
+      />
+
+      {/* Universal Document Export Preview Modal - triggers on ANY Print/Export button across all screens */}
+      <DocumentExportPreviewModal
+        isOpen={isDocExportPreviewOpen}
+        onClose={() => setIsDocExportPreviewOpen(false)}
+        docType={exportDocType}
+        quarterLabel={quarterLabels[selectedQuarter]}
+        projects={customProjectsForExport || exportProjects}
+        departments={departments}
+        totalAllocated={customProjectsForExport ? customProjectsForExport.reduce((s, p) => s + p.allocated, 0) : (selectedQuarter === 'all' ? totalAllocated : exportProjects.reduce((s, p) => s + p.allocated, 0))}
+        totalSpent={customProjectsForExport ? customProjectsForExport.reduce((s, p) => s + p.spent, 0) : (selectedQuarter === 'all' ? totalSpent : exportProjects.reduce((s, p) => s + p.spent, 0))}
+        centralReserve={centralReserve}
+        projectDetail={singleProjectForExport || selectedProject}
+      />
+
+      {/* Toast System */}
+      <ToastContainer toasts={toasts} onDismiss={removeToast} />
+    </div>
+  );
+}
